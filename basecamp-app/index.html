@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Private Airdrop Claim — LP-0003</title>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 640px; margin: 2rem auto; padding: 0 1rem; }
+    h1 { font-size: 1.25rem; }
+    .section { margin: 1.5rem 0; }
+    label { display: block; font-size: 0.85rem; margin-bottom: 0.25rem; color: #555; }
+    input { width: 100%; box-sizing: border-box; padding: 0.4rem; font-family: monospace; font-size: 0.85rem; border: 1px solid #ccc; border-radius: 4px; }
+    button { margin-top: 0.5rem; padding: 0.4rem 1rem; cursor: pointer; }
+    pre { background: #f5f5f5; padding: 0.75rem; border-radius: 4px; font-size: 0.8rem; overflow-x: auto; white-space: pre-wrap; word-break: break-all; }
+    .note { font-size: 0.8rem; color: #777; margin-top: 0.25rem; }
+    .ok { color: #2a7; }
+    .err { color: #c33; }
+  </style>
+</head>
+<body>
+  <h1>Private Airdrop Claim</h1>
+  <p>Compute your leaf hash offline. Your account ID never leaves this page.</p>
+
+  <div class="section">
+    <h2>1 — Compute leaf hash</h2>
+    <label>Account ID (64-char hex)</label>
+    <input id="account-id" type="password" placeholder="your private account ID" />
+    <label>Allocation (integer)</label>
+    <input id="allocation" type="number" placeholder="e.g. 1000" />
+    <button onclick="computeLeaf()">Compute</button>
+    <pre id="leaf-out"></pre>
+    <p class="note">Give the distributor this leaf hash to include in the Merkle tree. Your account ID stays private.</p>
+  </div>
+
+  <div class="section">
+    <h2>2 — Generate claim proof</h2>
+    <p>Once the distributor publishes the Merkle root, use the CLI to generate your proof:</p>
+    <pre>airdrop-claim prove \
+  --account-id &lt;your-id&gt; \
+  --allocation &lt;N&gt; \
+  --distributor-id &lt;dist-id&gt; \
+  --merkle-root &lt;root&gt; \
+  --leaf-index &lt;N&gt; \
+  --merkle-path &lt;sibling,sibling,...&gt; \
+  --recipient-note &lt;hex&gt; \
+  --out claim-receipt.bin</pre>
+    <p class="note">The proof is generated locally. Your account ID is a private input and does not appear in the output.</p>
+  </div>
+
+  <div class="section">
+    <h2>3 — Submit claim</h2>
+    <p>Submit <code>claim-receipt.bin</code> to the on-chain <code>claim</code> instruction with your recipient note. The on-chain program verifies the receipt and marks your nullifier spent.</p>
+  </div>
+
+  <script>
+    async function sha256bytes(bytes) {
+      const buf = await crypto.subtle.digest('SHA-256', bytes);
+      return new Uint8Array(buf);
+    }
+
+    function hexToBytes(hex) {
+      const b = new Uint8Array(hex.length / 2);
+      for (let i = 0; i < b.length; i++) b[i] = parseInt(hex.substr(i*2,2),16);
+      return b;
+    }
+
+    function bytesToHex(b) {
+      return Array.from(b).map(x => x.toString(16).padStart(2,'0')).join('');
+    }
+
+    function u128toLE(n) {
+      // Encode a BigInt as 16 LE bytes
+      const bytes = new Uint8Array(16);
+      let v = BigInt(n);
+      for (let i = 0; i < 16; i++) { bytes[i] = Number(v & 0xffn); v >>= 8n; }
+      return bytes;
+    }
+
+    async function computeLeaf() {
+      const acctHex = document.getElementById('account-id').value.trim();
+      const alloc = document.getElementById('allocation').value.trim();
+      const out = document.getElementById('leaf-out');
+
+      if (acctHex.length !== 64) { out.textContent = 'Error: Account ID must be 64 hex characters.'; return; }
+      if (!alloc || isNaN(alloc)) { out.textContent = 'Error: Allocation must be an integer.'; return; }
+
+      // leaf = SHA256(0x00 || account_id_bytes || allocation_le16)
+      const acctBytes = hexToBytes(acctHex);
+      const allocBytes = u128toLE(BigInt(alloc));
+      const combined = new Uint8Array(1 + 32 + 16);
+      combined[0] = 0x00;
+      combined.set(acctBytes, 1);
+      combined.set(allocBytes, 33);
+
+      const hash = await sha256bytes(combined);
+      out.textContent = 'leaf: ' + bytesToHex(hash);
+    }
+  </script>
+</body>
+</html>

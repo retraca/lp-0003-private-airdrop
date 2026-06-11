@@ -1,0 +1,12 @@
+{
+  "name": "private_airdrop",
+  "version": "0.1.0",
+  "description": "LP-0003 private airdrop claim: prove Merkle membership without revealing account identity",
+  "author": "retraca",
+  "type": "mini-app",
+  "category": "defi",
+  "interface": "basecamp",
+  "main": "index.html",
+  "capabilities": [],
+  "dependencies": []
+}
