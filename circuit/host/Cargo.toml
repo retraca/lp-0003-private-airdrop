@@ -1,0 +1,23 @@
+[package]
+name = "private-airdrop-host"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "airdrop-claim"
+path = "src/main.rs"
+
+[dependencies]
+risc0-zkvm = { version = "1", features = ["std"] }
+anyhow = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+reqwest = { version = "0.11", features = ["json"] }
+hex = "0.4"
+sha2 = "0.10"
+tokio = { version = "1", features = ["full"] }
+clap = { version = "4", features = ["derive"] }
+bytemuck = "1"
+
+[build-dependencies]
+risc0-build = "1"
