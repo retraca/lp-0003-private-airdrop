@@ -1,8 +1,9 @@
 //! On-chain airdrop distributor program for LP-0003.
-//! Verifies a claim ZK proof, checks nullifier, transfers tokens to the claimant's private account.
+//! Verifies a claim ZK proof, checks nullifier, transfers tokens to the claimant's private note.
 
 use borsh::{BorshDeserialize, BorshSerialize};
-use nssa_core::account::{AccountPostState, AccountWithMetadata, Data};
+use nssa_core::account::{AccountWithMetadata, Data};
+use nssa_core::program::AccountPostState;
 use sha2::{Digest, Sha256};
 use spel_framework::error::SpelError;
 
@@ -58,26 +59,26 @@ pub fn apply_claim(
     recipient_note: &[u8],
 ) -> Result<(), SpelError> {
     if journal.distributor_id != distributor_id {
-        return Err(SpelError::Custom { code: ERR_DISTRIBUTOR_MISMATCH });
+        return Err(SpelError::Custom { code: ERR_DISTRIBUTOR_MISMATCH, message: "distributor mismatch".to_string() });
     }
 
     if journal.merkle_root != state.merkle_root {
-        return Err(SpelError::Custom { code: ERR_ROOT_MISMATCH });
+        return Err(SpelError::Custom { code: ERR_ROOT_MISMATCH, message: "merkle root mismatch".to_string() });
     }
 
     // Recipient binding before any state mutation: a relay that swaps the
     // destination after intercepting the receipt fails here.
     let expected_hash: [u8; 32] = sha2_hash(recipient_note);
     if expected_hash != journal.recipient_note_hash {
-        return Err(SpelError::Custom { code: ERR_RECIPIENT_MISMATCH });
+        return Err(SpelError::Custom { code: ERR_RECIPIENT_MISMATCH, message: "recipient mismatch".to_string() });
     }
 
     if state.spent_nullifiers.contains(&journal.nullifier) {
-        return Err(SpelError::Custom { code: ERR_NULLIFIER_SPENT });
+        return Err(SpelError::Custom { code: ERR_NULLIFIER_SPENT, message: "nullifier already spent".to_string() });
     }
 
     if state.claimed + journal.allocation > state.total_supply {
-        return Err(SpelError::Custom { code: ERR_DISTRIBUTION_EXHAUSTED });
+        return Err(SpelError::Custom { code: ERR_DISTRIBUTION_EXHAUSTED, message: "distribution exhausted".to_string() });
     }
 
     state.spent_nullifiers.push(journal.nullifier);
@@ -99,14 +100,14 @@ pub fn claim(
     receipt_bytes: Vec<u8>,
     recipient_note: Vec<u8>,
 ) -> Result<Vec<AccountPostState>, SpelError> {
-    let mut state = DistributionState::try_from_slice(&distribution_account.account.data.0)
+    let mut state = DistributionState::try_from_slice(distribution_account.account.data.as_ref())
         .expect("DistributionState must deserialise");
 
     let receipt: risc0_zkvm::Receipt = risc0_zkvm::serde::from_slice(&receipt_bytes)
-        .map_err(|_| SpelError::Custom { code: ERR_PROOF_INVALID })?;
+        .map_err(|_| SpelError::Custom { code: ERR_PROOF_INVALID, message: "receipt deserialise failed".to_string() })?;
 
     receipt.verify(IMAGE_ID)
-        .map_err(|_| SpelError::Custom { code: ERR_PROOF_INVALID })?;
+        .map_err(|_| SpelError::Custom { code: ERR_PROOF_INVALID, message: "receipt verification failed".to_string() })?;
 
     #[derive(serde::Deserialize)]
     struct RawJournal {
@@ -118,7 +119,7 @@ pub fn claim(
     }
 
     let j: RawJournal = receipt.journal.decode()
-        .map_err(|_| SpelError::Custom { code: ERR_PROOF_INVALID })?;
+        .map_err(|_| SpelError::Custom { code: ERR_PROOF_INVALID, message: "journal decode failed".to_string() })?;
 
     let journal = ClaimJournal {
         merkle_root: j.merkle_root,
@@ -128,15 +129,12 @@ pub fn claim(
         recipient_note_hash: j.recipient_note_hash,
     };
 
-    let dist_id_bytes: [u8; 32] = distribution_account.account_id.to_bytes();
+    let dist_id_bytes: [u8; 32] = *distribution_account.account_id.value();
     apply_claim(&mut state, &journal, dist_id_bytes, &recipient_note)?;
 
     let mut dist_account = distribution_account.account;
-    dist_account.data = Data::from_borsh(&state);
+    dist_account.data = Data::try_from(borsh::to_vec(&state).expect("state serialise failed"))
+        .expect("state too large for Data");
 
-    // The recipient_note is an encrypted token commitment emitted as an event.
-    // In a full LEZ token integration this would invoke the token program's
-    // private transfer instruction. For now we emit the note as account data
-    // on a separate ephemeral account (per the LEZ private note pattern).
     Ok(vec![AccountPostState::new(dist_account)])
 }

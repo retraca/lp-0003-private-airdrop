@@ -3,6 +3,7 @@
 //! receipt needed. The ZK proof is tested separately via `demo.sh`.
 
 use private_airdrop_program::*;
+use spel_framework::error::SpelError;
 use sha2::{Digest, Sha256};
 
 fn sha256(data: &[u8]) -> [u8; 32] {
@@ -67,7 +68,7 @@ fn nullifier_spent_rejected() {
     apply_claim(&mut state, &journal, distributor, note).unwrap();
 
     let err = apply_claim(&mut state, &journal, distributor, note).unwrap_err();
-    assert_eq!(err, spel_framework::error::SpelError::Custom { code: ERR_NULLIFIER_SPENT });
+    let SpelError::Custom { code, .. } = err else { panic!("wrong error type") }; assert_eq!(code, ERR_NULLIFIER_SPENT, "wrong error code");
 }
 
 #[test]
@@ -78,7 +79,7 @@ fn distributor_mismatch_rejected() {
     let wrong_distributor = [0xccu8; 32];
 
     let err = apply_claim(&mut state, &journal, wrong_distributor, note).unwrap_err();
-    assert_eq!(err, spel_framework::error::SpelError::Custom { code: ERR_DISTRIBUTOR_MISMATCH });
+    let SpelError::Custom { code, .. } = err else { panic!("wrong error type") }; assert_eq!(code, ERR_DISTRIBUTOR_MISMATCH, "wrong error code");
 }
 
 #[test]
@@ -90,7 +91,7 @@ fn merkle_root_mismatch_rejected() {
     let distributor = [0xbbu8; 32];
 
     let err = apply_claim(&mut state, &journal, distributor, note).unwrap_err();
-    assert_eq!(err, spel_framework::error::SpelError::Custom { code: ERR_ROOT_MISMATCH });
+    let SpelError::Custom { code, .. } = err else { panic!("wrong error type") }; assert_eq!(code, ERR_ROOT_MISMATCH, "wrong error code");
 }
 
 #[test]
@@ -103,7 +104,7 @@ fn recipient_mismatch_rejected_before_nullifier_consumed() {
     let distributor = [0xbbu8; 32];
 
     let err = apply_claim(&mut state, &journal, distributor, relay_note).unwrap_err();
-    assert_eq!(err, spel_framework::error::SpelError::Custom { code: ERR_RECIPIENT_MISMATCH });
+    let SpelError::Custom { code, .. } = err else { panic!("wrong error type") }; assert_eq!(code, ERR_RECIPIENT_MISMATCH, "wrong error code");
 
     // Nullifier must not be marked spent -- alice can still claim with correct note
     assert!(state.spent_nullifiers.is_empty());
@@ -120,7 +121,7 @@ fn distribution_exhausted_rejected() {
     let distributor = [0xbbu8; 32];
 
     let err = apply_claim(&mut state, &journal, distributor, note).unwrap_err();
-    assert_eq!(err, spel_framework::error::SpelError::Custom { code: ERR_DISTRIBUTION_EXHAUSTED });
+    let SpelError::Custom { code, .. } = err else { panic!("wrong error type") }; assert_eq!(code, ERR_DISTRIBUTION_EXHAUSTED, "wrong error code");
 
     // State unchanged
     assert_eq!(state.claimed, 0);
