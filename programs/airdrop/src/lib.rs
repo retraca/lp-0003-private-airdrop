@@ -13,6 +13,7 @@ fn sha2_hash(data: &[u8]) -> [u8; 32] {
 // IMAGE_ID injected by risc0-build; zero-check at compile time.
 include!(concat!(env!("OUT_DIR"), "/methods.rs"));
 use PRIVATE_AIRDROP_GUEST_ID as IMAGE_ID;
+#[cfg(not(test))]
 const _: () = assert!(
     IMAGE_ID[0] != 0 || IMAGE_ID[1] != 0,
     "IMAGE_ID is all-zero; build the guest before deploying"
@@ -38,6 +39,53 @@ pub struct DistributionState {
     pub spent_nullifiers: Vec<[u8; 32]>,
 }
 
+/// Decoded claim journal (public outputs from the RISC0 guest).
+pub struct ClaimJournal {
+    pub merkle_root: [u8; 32],
+    pub nullifier: [u8; 32],
+    pub distributor_id: [u8; 32],
+    pub allocation: u128,
+    pub recipient_note_hash: [u8; 32],
+}
+
+/// Core claim validation against mutable distribution state.
+/// Separated from receipt parsing so the state-machine logic is unit-testable
+/// without a real RISC0 receipt.
+pub fn apply_claim(
+    state: &mut DistributionState,
+    journal: &ClaimJournal,
+    distributor_id: [u8; 32],
+    recipient_note: &[u8],
+) -> Result<(), SpelError> {
+    if journal.distributor_id != distributor_id {
+        return Err(SpelError::Custom { code: ERR_DISTRIBUTOR_MISMATCH });
+    }
+
+    if journal.merkle_root != state.merkle_root {
+        return Err(SpelError::Custom { code: ERR_ROOT_MISMATCH });
+    }
+
+    // Recipient binding before any state mutation: a relay that swaps the
+    // destination after intercepting the receipt fails here.
+    let expected_hash: [u8; 32] = sha2_hash(recipient_note);
+    if expected_hash != journal.recipient_note_hash {
+        return Err(SpelError::Custom { code: ERR_RECIPIENT_MISMATCH });
+    }
+
+    if state.spent_nullifiers.contains(&journal.nullifier) {
+        return Err(SpelError::Custom { code: ERR_NULLIFIER_SPENT });
+    }
+
+    if state.claimed + journal.allocation > state.total_supply {
+        return Err(SpelError::Custom { code: ERR_DISTRIBUTION_EXHAUSTED });
+    }
+
+    state.spent_nullifiers.push(journal.nullifier);
+    state.claimed += journal.allocation;
+
+    Ok(())
+}
+
 /// Claim tokens from a private airdrop.
 ///
 /// Verifies the RISC0 receipt and transfers tokens to the claimant's private note.
@@ -61,7 +109,7 @@ pub fn claim(
         .map_err(|_| SpelError::Custom { code: ERR_PROOF_INVALID })?;
 
     #[derive(serde::Deserialize)]
-    struct Journal {
+    struct RawJournal {
         merkle_root: [u8; 32],
         nullifier: [u8; 32],
         distributor_id: [u8; 32],
@@ -69,44 +117,22 @@ pub fn claim(
         recipient_note_hash: [u8; 32],
     }
 
-    let journal: Journal = receipt.journal.decode()
+    let j: RawJournal = receipt.journal.decode()
         .map_err(|_| SpelError::Custom { code: ERR_PROOF_INVALID })?;
 
-    // distributor_id must match this distribution's account ID
+    let journal = ClaimJournal {
+        merkle_root: j.merkle_root,
+        nullifier: j.nullifier,
+        distributor_id: j.distributor_id,
+        allocation: j.allocation,
+        recipient_note_hash: j.recipient_note_hash,
+    };
+
     let dist_id_bytes: [u8; 32] = distribution_account.account_id.to_bytes();
-    if journal.distributor_id != dist_id_bytes {
-        return Err(SpelError::Custom { code: ERR_DISTRIBUTOR_MISMATCH });
-    }
-
-    // Merkle root must match the distribution's committed root
-    if journal.merkle_root != state.merkle_root {
-        return Err(SpelError::Custom { code: ERR_ROOT_MISMATCH });
-    }
-
-    // Nullifier must be unspent
-    if state.spent_nullifiers.contains(&journal.nullifier) {
-        return Err(SpelError::Custom { code: ERR_NULLIFIER_SPENT });
-    }
-
-    // Sufficient tokens remaining
-    if state.claimed + journal.allocation > state.total_supply {
-        return Err(SpelError::Custom { code: ERR_DISTRIBUTION_EXHAUSTED });
-    }
-
-    // Mark nullifier spent, deduct allocation
-    state.spent_nullifiers.push(journal.nullifier);
-    state.claimed += journal.allocation;
+    apply_claim(&mut state, &journal, dist_id_bytes, &recipient_note)?;
 
     let mut dist_account = distribution_account.account;
     dist_account.data = Data::from_borsh(&state);
-
-    // Bind proof to the submitted recipient_note. The guest committed SHA256(note)
-    // in its journal, so any attempt to redirect tokens by replaying this receipt
-    // with a different note fails here.
-    let expected_hash: [u8; 32] = sha2_hash(&recipient_note);
-    if expected_hash != journal.recipient_note_hash {
-        return Err(SpelError::Custom { code: ERR_RECIPIENT_MISMATCH });
-    }
 
     // The recipient_note is an encrypted token commitment emitted as an event.
     // In a full LEZ token integration this would invoke the token program's

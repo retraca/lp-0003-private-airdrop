@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
 # LP-0003 private airdrop end-to-end demo.
-# Requires: a running LEZ sequencer at localhost:9090 (start via lez-build).
-# Usage: ./demo.sh [--dev]   (--dev sets RISC0_DEV_MODE=1 for fast local testing)
+#
+# Runs fully offline: generates a claim proof locally, then verifies it.
+# Submitting to a live LEZ chain requires a running sequencer (see README).
+#
+# Usage: ./demo.sh [--dev]   (--dev sets RISC0_DEV_MODE=1 for fast testing)
 
 set -euo pipefail
 
@@ -12,69 +15,76 @@ done
 
 if [ "$DEV_MODE" = "1" ]; then
   export RISC0_DEV_MODE=1
-  echo "[demo] RISC0_DEV_MODE=1 (fast mock proofs)"
+  echo "[demo] RISC0_DEV_MODE=1 (fast mock proofs, no ZK)"
 else
-  echo "[demo] Using real RISC0 proofs (may take several minutes)"
+  echo "[demo] Real RISC0 proofs -- proof generation takes several minutes"
 fi
 
-SEQUENCER="${SEQUENCER:-http://127.0.0.1:9090}"
 CLAIM_BIN="./target/release/airdrop-claim"
 
 echo ""
 echo "=== LP-0003 Private Airdrop Demo ==="
 echo ""
 
-# Build
-echo "[1/5] Building..."
+echo "[1/4] Building..."
 cargo build --release --bin airdrop-claim 2>&1 | tail -3
 
-# Deterministic test keys (never use these outside of demo/testing)
+# Deterministic test inputs -- never use these outside demo/testing
 ACCOUNT_ID="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 DISTRIBUTOR_ID="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 ALLOCATION=1000
 RECIPIENT_NOTE="cafebabe01020304"
 
-echo ""
-echo "[2/5] Computing leaf hash..."
-LEAF=$("$CLAIM_BIN" leaf-hash --account-id "$ACCOUNT_ID" --allocation "$ALLOCATION" 2>/dev/null || \
-  echo "run: airdrop-claim leaf-hash ...")
-echo "Leaf: $LEAF"
+# Minimal depth-1 Merkle tree: root = SHA256(0x01 || leaf || leaf)
+# (both leaves identical for demo simplicity)
+LEAF=$(python3 -c "
+import hashlib, struct
+acct = bytes.fromhex('$ACCOUNT_ID')
+alloc = struct.pack('<16s', struct.pack('<Q', $ALLOCATION)[:8].ljust(16, b'\x00'))
+alloc = ($ALLOCATION).to_bytes(16, 'little')
+leaf = hashlib.sha256(b'\x00' + acct + alloc).digest()
+print(leaf.hex())
+")
+MERKLE_ROOT=$(python3 -c "
+import hashlib
+leaf = bytes.fromhex('$LEAF')
+root = hashlib.sha256(b'\x01' + leaf + leaf).digest()
+print(root.hex())
+")
 
 echo ""
-echo "[3/5] Generating claim proof (account_id kept private)..."
+echo "[2/4] Tree: leaf=$LEAF"
+echo "      root=$MERKLE_ROOT"
+
+echo ""
+echo "[3/4] Generating claim proof (account_id is a private input -- never in output)..."
 "$CLAIM_BIN" prove \
   --account-id "$ACCOUNT_ID" \
   --allocation "$ALLOCATION" \
   --distributor-id "$DISTRIBUTOR_ID" \
+  --merkle-root "$MERKLE_ROOT" \
+  --leaf-index 0 \
+  --merkle-path "$LEAF" \
   --recipient-note "$RECIPIENT_NOTE" \
-  --sequencer "$SEQUENCER" \
   --out /tmp/claim-receipt.bin
 
 echo ""
-echo "[4/5] Verifying receipt offline..."
-MERKLE_ROOT=$("$CLAIM_BIN" verify \
+echo "[4/4] Verifying receipt offline..."
+"$CLAIM_BIN" verify \
   --receipt /tmp/claim-receipt.bin \
   --distributor-id "$DISTRIBUTOR_ID" \
-  --recipient-note "$RECIPIENT_NOTE" \
-  2>/dev/null | grep "OK" || true)
-
-if [ -n "$MERKLE_ROOT" ]; then
-  echo "Offline verification: OK"
-else
-  echo "Offline verify failed (expected if RISC0_DEV_MODE changed between prove/verify)"
-fi
-
-echo ""
-echo "[5/5] Submitting to sequencer..."
-echo "  (In production: airdrop-claim submit --receipt /tmp/claim-receipt.bin ...)"
-echo "  Recipient note hash committed in proof -- cannot be redirected by relay."
+  --merkle-root "$MERKLE_ROOT" \
+  --recipient-note "$RECIPIENT_NOTE"
 
 echo ""
 echo "=== Demo complete ==="
 echo "Receipt: /tmp/claim-receipt.bin"
 echo ""
-echo "Key properties demonstrated:"
-echo "  - account_id never leaves this machine (private input only)"
-echo "  - nullifier prevents double-claim"
-echo "  - Merkle leaf/node domain separation prevents second-preimage"
-echo "  - recipient_note_hash bound in circuit -- proof cannot be replayed to different recipient"
+echo "To submit to a running LEZ chain, deploy programs/airdrop and call claim()"
+echo "with the receipt bytes and recipient_note."
+echo ""
+echo "Privacy properties:"
+echo "  - account_id is a private RISC0 input and never leaves this machine"
+echo "  - nullifier = SHA256(account_id || distributor_id) prevents double-claim"
+echo "  - Merkle leaf/node domain tags prevent second-preimage attacks"
+echo "  - recipient_note_hash bound in circuit -- proof cannot be replayed to a different recipient"
