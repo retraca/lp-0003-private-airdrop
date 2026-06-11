@@ -57,7 +57,7 @@ pub fn main() {
         preimage.push(0x00u8);
         preimage.extend_from_slice(&input.account_id_bytes);
         preimage.extend_from_slice(&input.allocation.to_le_bytes());
-        ShaImpl::hash_bytes(&preimage).as_bytes().try_into::<[u8; 32]>().unwrap()
+        ShaImpl::hash_bytes(&preimage).as_bytes().try_into().unwrap()
     };
 
     // 2. Verify Merkle inclusion.
@@ -91,7 +91,7 @@ pub fn main() {
         let mut preimage = alloc::vec::Vec::with_capacity(64);
         preimage.extend_from_slice(&input.account_id_bytes);
         preimage.extend_from_slice(&input.distributor_id);
-        ShaImpl::hash_bytes(&preimage).as_bytes().try_into::<[u8; 32]>().unwrap()
+        ShaImpl::hash_bytes(&preimage).as_bytes().try_into().unwrap()
     };
 
     // 4. Hash the recipient note. Publishing the hash in the journal binds this
