@@ -14,6 +14,12 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Clone LEZ (path dependency of the optional chain feature)
+        run: |
+          git clone --depth 1 --branch v0.1.2 \
+            https://github.com/logos-blockchain/logos-execution-zone.git \
+            "$GITHUB_WORKSPACE/../lez-build"
+
       - name: Cache cargo
         uses: actions/cache@v4
         with:
@@ -36,6 +42,12 @@ jobs:
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
+
+      - name: Clone LEZ (path dependency of the optional chain feature)
+        run: |
+          git clone --depth 1 --branch v0.1.2 \
+            https://github.com/logos-blockchain/logos-execution-zone.git \
+            "$GITHUB_WORKSPACE/../lez-build"
 
       - name: Cache cargo
         uses: actions/cache@v4
