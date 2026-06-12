@@ -91,6 +91,17 @@ jobs:
             ../lez-build/target
           key: ${{ runner.os }}-lez-v0.1.2-sequencer
 
+      - name: Install logos-blockchain-circuits release
+        run: |
+          mkdir -p ~/.logos-blockchain-circuits
+          curl -sfL -o /tmp/circuits.tar.gz \
+            https://github.com/logos-blockchain/logos-blockchain-circuits/releases/download/v0.5.3/logos-blockchain-circuits-v0.5.3-linux-x86_64.tar.gz
+          tar -xzf /tmp/circuits.tar.gz -C ~/.logos-blockchain-circuits
+          # the tarball may nest a versioned directory; surface its contents
+          inner=$(find ~/.logos-blockchain-circuits -maxdepth 1 -mindepth 1 -type d -name 'logos-blockchain-circuits-*' | head -1)
+          if [ -n "$inner" ]; then cp -r "$inner"/* ~/.logos-blockchain-circuits/; fi
+          ls ~/.logos-blockchain-circuits
+
       - name: Build standalone sequencer
         run: cargo build --release -p sequencer_service --features standalone
         working-directory: ../lez-build

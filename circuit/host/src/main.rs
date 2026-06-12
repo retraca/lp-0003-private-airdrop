@@ -513,7 +513,10 @@ async fn main() -> Result<()> {
 
         Cmd::Chain(chain_cmd) => {
             #[cfg(not(feature = "chain"))]
-            chain_not_available();
+            {
+                let _ = chain_cmd;
+                chain_not_available();
+            }
 
             #[cfg(feature = "chain")]
             match chain_cmd {
