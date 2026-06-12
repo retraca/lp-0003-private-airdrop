@@ -25,15 +25,38 @@ Private airdrop protocol for the Logos Execution Zone. Claimants prove Merkle me
 ## Quick start
 
 ```bash
-# Start local chain (from lez-build)
-docker compose up -d
+./demo.sh --dev                 # offline: tree, claim proof, verification
 
-# Run demo (RISC0_DEV_MODE=1 for instant mock proofs)
-./demo.sh --dev
-
-# Full proofs (takes ~10 min)
-./demo.sh
+# full on-chain lifecycle against the hosted testnet (real proofs):
+cargo build --release --features chain
+SEQUENCER=https://testnet.lez.logos.co ./demo.sh --chain
 ```
+
+## On-chain usage
+
+```bash
+# 0. Generate the distributor account key (one-time bootstrap credential)
+airdrop-claim chain keygen
+# -> signing_key + distributor_id
+
+# 1. Initialize the distribution (signed; commits Merkle root, registers the
+#    claim-circuit program)
+airdrop-claim chain initialize --sequencer <url> \
+  --program-id <airdrop-program-id> \
+  --claim-circuit-program-id <claim-circuit-program-id> \
+  --signing-key <hex> --merkle-root <hex> --total-supply 1000000
+
+# 2. Claim: one privacy-preserving transaction per recipient.
+#    Proving runs locally; the account_id and Merkle path never leave the machine.
+airdrop-claim chain claim --sequencer <url> --program-id <hex> \
+  --distributor-id <hex> --account-id <hex> --allocation <n> \
+  --leaf-index <i> --merkle-path <hex,hex,...> --recipient-note <hex>
+
+# Inspect state at any point
+airdrop-claim chain state --sequencer <url> --distributor-id <hex>
+```
+
+Deployed on the hosted LEZ testnet (`https://testnet.lez.logos.co`) — program IDs, distributions, and all claim transaction hashes in [docs/TESTNET_EVIDENCE.md](docs/TESTNET_EVIDENCE.md).
 
 ## CLI usage
 
@@ -64,6 +87,7 @@ airdrop-claim verify \
 | 7004 | ERR_NULLIFIER_SPENT |
 | 7005 | ERR_DISTRIBUTION_EXHAUSTED |
 | 7006 | ERR_RECIPIENT_MISMATCH |
+| 7007 | ERR_UNAUTHORIZED_CALLER |
 
 ## License
 
