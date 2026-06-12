@@ -7,6 +7,16 @@ edition = "2021"
 name = "airdrop-claim"
 path = "src/main.rs"
 
+[features]
+default = []
+# Enable on-chain commands (requires the lez-build workspace at ../../../lez-build/).
+chain = [
+    "dep:nssa",
+    "dep:sequencer_service_rpc",
+    "dep:common",
+    "dep:borsh",
+]
+
 [dependencies]
 risc0-zkvm = { version = "3.0.5", features = ["std"] }
 anyhow = "1"
@@ -18,6 +28,12 @@ sha2 = "0.10"
 tokio = { version = "1", features = ["full"] }
 clap = { version = "4", features = ["derive"] }
 bytemuck = "1"
+
+# chain feature: on-chain call support (requires lez-build)
+nssa          = { path = "../../../lez-build/nssa",                    optional = true }
+sequencer_service_rpc = { path = "../../../lez-build/sequencer/service/rpc", optional = true, features = ["client"] }
+common        = { path = "../../../lez-build/common",                  optional = true }
+borsh         = { version = "1",                                       optional = true }
 
 [build-dependencies]
 
