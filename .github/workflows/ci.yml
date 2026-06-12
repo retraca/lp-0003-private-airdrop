@@ -109,7 +109,7 @@ jobs:
       - name: Start sequencer
         run: |
           mkdir -p /tmp/lez-seq-home
-          RISC0_DEV_MODE=1 RUST_LOG=info \
+          RISC0_DEV_MODE=1 RUST_LOG=debug RUST_BACKTRACE=full \
             ../lez-build/target/release/sequencer_service \
             .github/sequencer_config.json -p 3040 > /tmp/lez-seq.log 2>&1 &
           for i in $(seq 1 60); do
