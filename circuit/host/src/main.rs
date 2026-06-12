@@ -80,6 +80,10 @@ enum ChainCmd {
         /// Program ID (64-char hex, from wallet deploy-program output).
         #[arg(long)]
         program_id: String,
+        /// Claim-circuit program ID (64-char hex). Claims are accepted only
+        /// as chained calls from this program.
+        #[arg(long)]
+        claim_circuit_program_id: String,
         /// Account signing key (64-char hex, from `chain keygen`).
         #[arg(long)]
         signing_key: String,
@@ -90,18 +94,40 @@ enum ChainCmd {
         #[arg(long)]
         total_supply: u128,
     },
-    /// Submit a claim proof on-chain.
+    /// Claim on-chain via a privacy-preserving transaction.
+    ///
+    /// Executes and proves the claim-circuit program locally (the account_id,
+    /// allocation, Merkle path, and note preimage never leave this machine and
+    /// never appear on-chain), composes the chained call into the airdrop
+    /// program, and submits one privacy-preserving transaction.
+    /// RISC0_DEV_MODE=0 means real proving: expect minutes.
     Claim {
         #[arg(long, default_value = "http://127.0.0.1:3040")]
         sequencer: String,
+        /// Airdrop program ID (64-char hex).
         #[arg(long)]
         program_id: String,
+        /// Path to the claim-circuit program binary (R0BF).
+        #[arg(long, default_value = "programs/claim_circuit/claim_circuit.bin")]
+        claim_circuit_bin: PathBuf,
+        /// Path to the airdrop program binary (R0BF).
+        #[arg(long, default_value = "programs/airdrop/private_airdrop.bin")]
+        airdrop_bin: PathBuf,
         #[arg(long)]
         distributor_id: String,
-        /// Path to claim receipt (output of `airdrop-claim prove --out`).
+        /// Claimant account ID (64-char hex). PRIVATE: used only for local proving.
         #[arg(long)]
-        receipt: PathBuf,
-        /// Recipient note bytes (hex, same value used when generating the proof).
+        account_id: String,
+        /// Allocation for this claimant (must match the Merkle leaf).
+        #[arg(long)]
+        allocation: u128,
+        /// Leaf index in the eligibility tree.
+        #[arg(long)]
+        leaf_index: u32,
+        /// Sibling nodes from leaf to root (comma-separated hex).
+        #[arg(long)]
+        merkle_path: String,
+        /// Recipient note bytes (hex).
         #[arg(long)]
         recipient_note: String,
     },
@@ -162,17 +188,39 @@ fn encode_vec_u8(bytes: &[u8], out: &mut Vec<u32>) {
 }
 
 #[cfg_attr(not(feature = "chain"), allow(dead_code))]
-fn instr_initialize(merkle_root: &[u8; 32], total_supply: u128) -> Vec<u32> {
+fn instr_initialize(
+    merkle_root: &[u8; 32],
+    claim_circuit_program_id: [u32; 8],
+    total_supply: u128,
+) -> Vec<u32> {
     let mut w = vec![0u32]; // variant 0
     encode_bytes32(merkle_root, &mut w);
+    w.extend_from_slice(&claim_circuit_program_id); // [u32; 8] = 8 words
     encode_u128(total_supply, &mut w);
     w
 }
 
+/// Encode the claim-circuit program's `submit_claim` instruction (variant 0):
+/// airdrop_program_id [u32;8], account_id [u8;32], allocation u128,
+/// leaf_index u32, merkle_path Vec<[u8;32]>, recipient_note Vec<u8>.
 #[cfg_attr(not(feature = "chain"), allow(dead_code))]
-fn instr_claim(journal_bytes: &[u8], recipient_note: &[u8]) -> Vec<u32> {
-    let mut w = vec![1u32]; // variant 1
-    encode_vec_u8(journal_bytes, &mut w);
+fn instr_cc_submit_claim(
+    airdrop_program_id: [u32; 8],
+    account_id: &[u8; 32],
+    allocation: u128,
+    leaf_index: u32,
+    merkle_path: &[[u8; 32]],
+    recipient_note: &[u8],
+) -> Vec<u32> {
+    let mut w = vec![0u32]; // variant 0 (single instruction)
+    w.extend_from_slice(&airdrop_program_id);
+    encode_bytes32(account_id, &mut w);
+    encode_u128(allocation, &mut w);
+    w.push(leaf_index);
+    w.push(merkle_path.len() as u32);
+    for node in merkle_path {
+        encode_bytes32(node, &mut w);
+    }
     encode_vec_u8(recipient_note, &mut w);
     w
 }
@@ -278,6 +326,90 @@ mod chain {
             .await
             .context("get_account failed")?;
         Ok((account.data.as_ref().to_vec(), account.program_owner))
+    }
+
+    /// Claim via a privacy-preserving transaction.
+    ///
+    /// Client-side: executes and proves the claim-circuit program (initial
+    /// call, eligibility data as private input) plus the chained airdrop claim
+    /// call, then wraps both in the PPE outer circuit proof. The sequencer
+    /// verifies one composite proof; instruction data of the initial call (the
+    /// claimant identity and Merkle path) never leaves this machine.
+    pub async fn send_claim_ppe(
+        sequencer: &str,
+        distributor_id: [u8; 32],
+        claim_circuit_bytecode: Vec<u8>,
+        airdrop_bytecode: Vec<u8>,
+        instruction_data: Vec<u32>,
+    ) -> Result<String> {
+        use key_protocol::key_management::{KeyChain, ephemeral_key_holder::EphemeralKeyHolder};
+        use nssa::privacy_preserving_transaction::{
+            Message as PpeMessage, WitnessSet as PpeWitnessSet,
+            circuit::ProgramWithDependencies,
+        };
+        use nssa::program::Program;
+        use nssa_core::account::{Account, AccountWithMetadata};
+        use std::collections::HashMap;
+
+        let client = SequencerClientBuilder::default()
+            .build(sequencer)
+            .context("build sequencer client")?;
+
+        let account_id = AccountId::new(distributor_id);
+        let account = client
+            .get_account(account_id)
+            .await
+            .context("get_account failed")?;
+        let pre_state = AccountWithMetadata::new(account, false, account_id);
+
+        // Fresh zero-balance private "claimer note": gives the transaction its
+        // required commitment/nullifier pair and makes the claim look like any
+        // other private transaction. The keys are throwaway.
+        let note_keys = KeyChain::new_os_random();
+        let note_npk = note_keys.nullifier_public_key;
+        let note_vpk = note_keys.viewing_public_key;
+        let note_pre = AccountWithMetadata::new(Account::default(), false, &note_npk);
+        let eph = EphemeralKeyHolder::new(&note_npk);
+        let note_ssk = eph.calculate_shared_secret_sender(&note_vpk);
+        let note_epk = eph.generate_ephemeral_public_key();
+
+        let claim_circuit =
+            Program::new(claim_circuit_bytecode).context("parse claim_circuit binary")?;
+        let airdrop = Program::new(airdrop_bytecode).context("parse airdrop binary")?;
+        let mut dependencies = HashMap::new();
+        dependencies.insert(airdrop.id(), airdrop);
+        let pwd = ProgramWithDependencies::new(claim_circuit, dependencies);
+
+        eprintln!("Proving privacy-preserving execution (claim circuit + airdrop chained call)...");
+        eprintln!("This runs the RISC0 prover locally; with RISC0_DEV_MODE=0 expect minutes.");
+        let (output, proof) = nssa::execute_and_prove(
+            vec![pre_state, note_pre],
+            instruction_data,
+            vec![0, 2],                 // public distribution account + fresh private note
+            vec![(note_npk, note_ssk)], // note encryption keys
+            vec![],                     // no nsks: the note is unauthenticated (new)
+            vec![None],                 // membership proof slot for the new note
+            &pwd,
+        )
+        .map_err(|e| anyhow::anyhow!("execute_and_prove failed: {e:?}"))?;
+
+        let message = PpeMessage::try_from_circuit_output(
+            vec![account_id],
+            vec![], // no signer nonces: the distribution account is program-owned
+            vec![(note_npk, note_vpk, note_epk)],
+            output,
+        )
+        .map_err(|e| anyhow::anyhow!("message construction failed: {e:?}"))?;
+
+        let witness_set = PpeWitnessSet::for_message(&message, proof, &[]);
+        let tx = nssa::PrivacyPreservingTransaction::new(message, witness_set);
+
+        let hash = client
+            .send_transaction(NSSATransaction::PrivacyPreserving(tx))
+            .await
+            .context("send_transaction failed")?;
+
+        Ok(hex::encode(hash))
     }
 }
 
@@ -402,41 +534,41 @@ async fn main() -> Result<()> {
                     println!("program_owner: {owner_hex}");
                     println!("data ({} bytes): {}", data.len(), hex::encode(&data));
                 }
-                ChainCmd::Initialize { sequencer, program_id, signing_key, merkle_root, total_supply } => {
+                ChainCmd::Initialize { sequencer, program_id, claim_circuit_program_id, signing_key, merkle_root, total_supply } => {
                     let pid = parse_program_id(&program_id)?;
+                    let cc_pid = parse_program_id(&claim_circuit_program_id)?;
                     let key: nssa::PrivateKey = signing_key.parse()
                         .map_err(|e| anyhow::anyhow!("invalid signing key: {e:?}"))?;
                     let root = parse_hex32(&merkle_root)?;
-                    let instr = instr_initialize(&root, total_supply);
+                    let instr = instr_initialize(&root, cc_pid, total_supply);
                     let (hash, account_id) =
                         chain::send_signed_call(&sequencer, pid, &key, instr).await?;
                     println!("tx: {hash}");
                     println!("distributor_id: {}", hex::encode(account_id.value()));
                 }
-                ChainCmd::Claim { sequencer, program_id, distributor_id, receipt, recipient_note } => {
+                ChainCmd::Claim { sequencer, program_id, claim_circuit_bin, airdrop_bin, distributor_id, account_id, allocation, leaf_index, merkle_path, recipient_note } => {
                     let pid = parse_program_id(&program_id)?;
                     let did = parse_hex32(&distributor_id)?;
+                    let acct = parse_hex32(&account_id)?;
                     let note_bytes = Vec::from_hex(&recipient_note).context("invalid recipient_note hex")?;
 
-                    let raw = std::fs::read(&receipt).context("read receipt file")?;
-                    let receipt_words: Vec<u32> = raw.chunks_exact(4)
-                        .map(|c| u32::from_le_bytes(c.try_into().unwrap()))
+                    let path: Result<Vec<[u8; 32]>> = merkle_path
+                        .split(',')
+                        .map(|s| parse_hex32(s.trim()))
                         .collect();
-                    let r: risc0_zkvm::Receipt = risc0_zkvm::serde::from_slice(&receipt_words)
-                        .map_err(|e| anyhow::anyhow!("deserialise receipt: {e}"))?;
+                    let path = path?;
 
-                    #[derive(serde::Deserialize, borsh::BorshSerialize)]
-                    struct Journal {
-                        merkle_root: [u8; 32],
-                        nullifier: [u8; 32],
-                        distributor_id: [u8; 32],
-                        allocation: u128,
-                        recipient_note_hash: [u8; 32],
-                    }
-                    let j: Journal = r.journal.decode()?;
-                    let journal_bytes = borsh::to_vec(&j)?;
-                    let instr = instr_claim(&journal_bytes, &note_bytes);
-                    let hash = chain::send_call(&sequencer, pid, did, instr).await?;
+                    let cc_bytecode = std::fs::read(&claim_circuit_bin)
+                        .with_context(|| format!("read {}", claim_circuit_bin.display()))?;
+                    let ad_bytecode = std::fs::read(&airdrop_bin)
+                        .with_context(|| format!("read {}", airdrop_bin.display()))?;
+
+                    let instr = instr_cc_submit_claim(
+                        pid, &acct, allocation, leaf_index, &path, &note_bytes,
+                    );
+                    let hash = chain::send_claim_ppe(
+                        &sequencer, did, cc_bytecode, ad_bytecode, instr,
+                    ).await?;
                     println!("tx: {hash}");
                 }
             }

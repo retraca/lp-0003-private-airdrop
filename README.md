@@ -16,9 +16,10 @@ Private airdrop protocol for the Logos Execution Zone. Claimants prove Merkle me
 
 | Path | Role |
 |------|------|
-| `circuit/guest` | RISC0 zkVM guest circuit |
-| `circuit/host` | Off-chain CLI: `airdrop-claim prove / verify` |
-| `programs/airdrop` | LEZ on-chain verifier program |
+| `programs/airdrop` | LEZ on-chain program (`initialize`, `claim`) |
+| `programs/claim_circuit` | Claim-circuit program: Merkle inclusion proof + chained claim delivery |
+| `circuit/guest` | Standalone RISC0 circuit for offline claim receipts (off-chain coordination) |
+| `circuit/host` | CLI: offline (`prove / verify`) + on-chain (`chain keygen / initialize / claim / state`) |
 | `sdk` | Client SDK (`submit_claim`, `leaf_hash`, `node_hash`) |
 
 ## Quick start

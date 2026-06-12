@@ -1,15 +1,12 @@
 [package]
-name = "private-airdrop-program"
+name = "private-airdrop-claim-circuit"
 version = "0.1.0"
 edition = "2021"
 
 [[bin]]
-name = "private_airdrop"
+name = "claim_circuit"
 path = "src/main.rs"
 test = false
-
-[lib]
-path = "src/lib.rs"
 
 [dependencies]
 borsh = { version = "1", features = ["derive"] }
@@ -18,6 +15,7 @@ spel-framework = { git = "https://github.com/logos-co/spel.git" }
 risc0-zkvm = { version = "3.0.5", features = ["std"] }
 serde = { version = "1", features = ["derive"] }
 sha2 = "0.10"
+private-airdrop-program = { path = "../airdrop" }
 # pin ruint to avoid MSRV conflict with risc0 guest-builder Docker (rustc 1.88.0-dev)
 ruint = "=1.17.0"
 

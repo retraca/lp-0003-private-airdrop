@@ -1,0 +1,25 @@
+{
+    "home": "/tmp/lez-seq-home",
+    "genesis_id": 1,
+    "is_genesis_random": true,
+    "max_num_tx_in_block": 20,
+    "max_block_size": "1 MiB",
+    "mempool_max_size": 10000,
+    "block_create_timeout": "5s",
+    "retry_pending_blocks_timeout": "7s",
+    "bedrock_config": {
+        "backoff": {
+            "start_delay": "100ms",
+            "max_retries": 5
+        },
+        "channel_id": "0101010101010101010101010101010101010101010101010101010101010101",
+        "node_url": "http://127.0.0.1:18080"
+    },
+    "indexer_rpc_url": "ws://127.0.0.1:8779",
+    "initial_accounts": [],
+    "initial_commitments": [],
+    "signing_key": [
+        37, 37, 37, 37, 37, 37, 37, 37, 37, 37, 37, 37, 37, 37, 37, 37,
+        37, 37, 37, 37, 37, 37, 37, 37, 37, 37, 37, 37, 37, 37, 37, 37
+    ]
+}

@@ -12,6 +12,8 @@ default = []
 # Enable on-chain commands (requires the lez-build workspace at ../../../lez-build/).
 chain = [
     "dep:nssa",
+    "dep:nssa-core",
+    "dep:key_protocol",
     "dep:sequencer_service_rpc",
     "dep:common",
     "dep:borsh",
@@ -31,6 +33,8 @@ bytemuck = "1"
 
 # chain feature: on-chain call support (requires lez-build)
 nssa          = { path = "../../../lez-build/nssa",                    optional = true }
+nssa-core     = { package = "nssa_core", path = "../../../lez-build/nssa/core", optional = true, features = ["host"] }
+key_protocol  = { path = "../../../lez-build/key_protocol",            optional = true }
 sequencer_service_rpc = { path = "../../../lez-build/sequencer/service/rpc", optional = true, features = ["client"] }
 common        = { path = "../../../lez-build/common",                  optional = true }
 borsh         = { version = "1",                                       optional = true }

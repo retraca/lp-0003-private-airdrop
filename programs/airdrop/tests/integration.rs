@@ -29,6 +29,7 @@ fn node_hash(left: &[u8; 32], right: &[u8; 32]) -> [u8; 32] {
 fn base_state() -> DistributionState {
     DistributionState {
         merkle_root: [0xaau8; 32],
+        claim_circuit_program_id: [0x11u32; 8],
         total_supply: 10_000,
         claimed: 0,
         spent_nullifiers: vec![],

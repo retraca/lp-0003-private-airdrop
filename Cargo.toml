@@ -4,6 +4,6 @@ members = [
     "circuit/host",
     "sdk",
 ]
-# programs/airdrop depends on nssa-core (private LEZ dep) -- not compilable standalone
-exclude = ["programs/airdrop"]
+# programs/* depend on nssa-core (private LEZ dep) -- not compilable standalone
+exclude = ["programs/airdrop", "programs/claim_circuit"]
 resolver = "2"

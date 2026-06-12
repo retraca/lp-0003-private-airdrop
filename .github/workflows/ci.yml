@@ -50,3 +50,85 @@ jobs:
         env:
           RISC0_DEV_MODE: "1"
         run: cargo test --workspace -- --test-threads=1
+
+      - name: Airdrop program state-machine tests
+        env:
+          RISC0_DEV_MODE: "1"
+        run: cargo test --manifest-path programs/airdrop/Cargo.toml --lib --tests -- --test-threads=1
+
+  e2e-sequencer:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Clone LEZ (logos-execution-zone v0.1.2) as sibling lez-build
+        run: |
+          git clone --depth 1 --branch v0.1.2 \
+            https://github.com/logos-blockchain/logos-execution-zone.git \
+            "$GITHUB_WORKSPACE/../lez-build"
+
+      - name: Cache LEZ sequencer build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            ../lez-build/target
+          key: ${{ runner.os }}-lez-v0.1.2-sequencer
+
+      - name: Build standalone sequencer
+        run: cargo build --release -p sequencer_service --features standalone
+        working-directory: ../lez-build
+
+      - name: Start sequencer
+        run: |
+          mkdir -p /tmp/lez-seq-home
+          RISC0_DEV_MODE=1 RUST_LOG=info \
+            ../lez-build/target/release/sequencer_service \
+            .github/sequencer_config.json -p 3040 > /tmp/lez-seq.log 2>&1 &
+          for i in $(seq 1 60); do
+            curl -sf -m 2 -X POST http://127.0.0.1:3040 \
+              -H 'Content-Type: application/json' \
+              -d '{"jsonrpc":"2.0","method":"checkHealth","params":[],"id":1}' \
+              >/dev/null 2>&1 && exit 0
+            sleep 2
+          done
+          echo "sequencer did not come up"; tail -50 /tmp/lez-seq.log; exit 1
+
+      - name: Cache repo build (chain feature)
+        uses: actions/cache@v4
+        with:
+          path: target
+          key: ${{ runner.os }}-cargo-chain-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Build CLI with chain feature
+        run: cargo build --release --bin airdrop-claim --features chain
+
+      - name: Deploy programs to local sequencer
+        run: |
+          python3 - <<'PYEOF'
+          import json, base64, struct, urllib.request
+          def deploy(path):
+              bytecode = open(path,'rb').read()
+              tx = bytes([2]) + struct.pack('<I', len(bytecode)) + bytecode
+              param = base64.b64encode(tx).decode()
+              req = urllib.request.Request('http://127.0.0.1:3040',
+                  data=json.dumps({'jsonrpc':'2.0','method':'sendTransaction','params':[param],'id':1}).encode(),
+                  headers={'Content-Type':'application/json'})
+              print(path, '->', json.loads(urllib.request.urlopen(req, timeout=60).read())['result'])
+          deploy('programs/airdrop/private_airdrop.bin')
+          deploy('programs/claim_circuit/claim_circuit.bin')
+          PYEOF
+          sleep 12
+
+      - name: Full e2e demo against the sequencer (initialize, PPE claim)
+        env:
+          SEQUENCER: http://127.0.0.1:3040
+        run: ./demo.sh --dev --chain
+
+      - name: Sequencer log on failure
+        if: failure()
+        run: tail -100 /tmp/lez-seq.log

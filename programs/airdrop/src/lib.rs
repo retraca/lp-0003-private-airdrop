@@ -1,9 +1,23 @@
 //! On-chain airdrop distributor program for LP-0003.
-//! Verifies a claim ZK proof, checks nullifier, transfers tokens to the claimant's private note.
+//!
+//! Architecture (chained-call composition over the LEZ privacy-preserving
+//! execution pipeline):
+//!   - The distributor commits to an eligibility Merkle tree at initialization.
+//!   - To claim, a recipient submits a privacy-preserving transaction whose
+//!     initial call is the claim-circuit program (`programs/claim_circuit`).
+//!     That program receives the claimant's account_id, allocation, Merkle
+//!     path, and recipient-note preimage as PRIVATE inputs (initial-call
+//!     instruction data never appears on-chain), verifies Merkle inclusion
+//!     against the root stored in the distribution account, derives the
+//!     nullifier, and declares a ChainedCall into this program's `claim`
+//!     instruction.
+//!   - `claim` trusts its caller identity: the PPE outer circuit proves the
+//!     chained-call linkage (caller_program_id cannot be spoofed), so checking
+//!     `ctx.caller_program_id == state.claim_circuit_program_id` is equivalent
+//!     to verifying the inclusion proof itself.
+//!   - Per-distribution nullifiers prevent double-claiming.
 
 use borsh::{BorshDeserialize, BorshSerialize};
-use nssa_core::account::{AccountWithMetadata, Data};
-use nssa_core::program::AccountPostState;
 use sha2::{Digest, Sha256};
 use spel_framework::error::SpelError;
 
@@ -11,27 +25,24 @@ fn sha2_hash(data: &[u8]) -> [u8; 32] {
     Sha256::digest(data).into()
 }
 
-// IMAGE_ID injected by risc0-build; zero-check at compile time.
-include!(concat!(env!("OUT_DIR"), "/methods.rs"));
-use PRIVATE_AIRDROP_GUEST_ID as IMAGE_ID;
-#[cfg(not(test))]
-const _: () = assert!(
-    IMAGE_ID[0] != 0 || IMAGE_ID[1] != 0,
-    "IMAGE_ID is all-zero; build the guest before deploying"
-);
-
 pub const ERR_PROOF_INVALID: u32 = 7001;
 pub const ERR_DISTRIBUTOR_MISMATCH: u32 = 7002;
 pub const ERR_ROOT_MISMATCH: u32 = 7003;
 pub const ERR_NULLIFIER_SPENT: u32 = 7004;
 pub const ERR_DISTRIBUTION_EXHAUSTED: u32 = 7005;
 pub const ERR_RECIPIENT_MISMATCH: u32 = 7006;
+/// `claim` was invoked by something other than the registered claim-circuit
+/// program. Only chained calls from that program carry a valid inclusion proof.
+pub const ERR_UNAUTHORIZED_CALLER: u32 = 7007;
 
 /// Per-distribution state stored on-chain.
 #[derive(Debug, Clone, BorshSerialize, BorshDeserialize)]
 pub struct DistributionState {
     /// Merkle root of the (account_id, allocation) commitment tree.
     pub merkle_root: [u8; 32],
+    /// Program ID of the claim-circuit program authorized to deliver claims
+    /// (chained-call caller). Set once at initialization.
+    pub claim_circuit_program_id: [u32; 8],
     /// Total tokens available in this distribution.
     pub total_supply: u128,
     /// Tokens already claimed.
@@ -40,7 +51,8 @@ pub struct DistributionState {
     pub spent_nullifiers: Vec<[u8; 32]>,
 }
 
-/// Decoded claim journal (public outputs from the RISC0 guest).
+/// Decoded claim journal (public outputs of the claim circuit, delivered as
+/// chained-call instruction data).
 pub struct ClaimJournal {
     pub merkle_root: [u8; 32],
     pub nullifier: [u8; 32],
@@ -50,8 +62,8 @@ pub struct ClaimJournal {
 }
 
 /// Core claim validation against mutable distribution state.
-/// Separated from receipt parsing so the state-machine logic is unit-testable
-/// without a real RISC0 receipt.
+/// Separated from instruction plumbing so the state-machine logic is
+/// unit-testable without a chained-call context.
 pub fn apply_claim(
     state: &mut DistributionState,
     journal: &ClaimJournal,
@@ -67,7 +79,7 @@ pub fn apply_claim(
     }
 
     // Recipient binding before any state mutation: a relay that swaps the
-    // destination after intercepting the receipt fails here.
+    // destination after intercepting the claim fails here.
     let expected_hash: [u8; 32] = sha2_hash(recipient_note);
     if expected_hash != journal.recipient_note_hash {
         return Err(SpelError::Custom { code: ERR_RECIPIENT_MISMATCH, message: "recipient mismatch".to_string() });
@@ -85,56 +97,4 @@ pub fn apply_claim(
     state.claimed += journal.allocation;
 
     Ok(())
-}
-
-/// Claim tokens from a private airdrop.
-///
-/// Verifies the RISC0 receipt and transfers tokens to the claimant's private note.
-///
-/// Inputs:
-///   - `distribution_account`: holds `DistributionState`
-///   - `receipt_bytes`: RISC0 proof that the claimant is in the Merkle tree
-///   - `recipient_note`: encrypted token note to credit (opaque bytes sent to recipient)
-pub fn claim(
-    distribution_account: AccountWithMetadata,
-    receipt_bytes: Vec<u8>,
-    recipient_note: Vec<u8>,
-) -> Result<Vec<AccountPostState>, SpelError> {
-    let mut state = DistributionState::try_from_slice(distribution_account.account.data.as_ref())
-        .expect("DistributionState must deserialise");
-
-    let receipt: risc0_zkvm::Receipt = risc0_zkvm::serde::from_slice(&receipt_bytes)
-        .map_err(|_| SpelError::Custom { code: ERR_PROOF_INVALID, message: "receipt deserialise failed".to_string() })?;
-
-    receipt.verify(IMAGE_ID)
-        .map_err(|_| SpelError::Custom { code: ERR_PROOF_INVALID, message: "receipt verification failed".to_string() })?;
-
-    #[derive(serde::Deserialize)]
-    struct RawJournal {
-        merkle_root: [u8; 32],
-        nullifier: [u8; 32],
-        distributor_id: [u8; 32],
-        allocation: u128,
-        recipient_note_hash: [u8; 32],
-    }
-
-    let j: RawJournal = receipt.journal.decode()
-        .map_err(|_| SpelError::Custom { code: ERR_PROOF_INVALID, message: "journal decode failed".to_string() })?;
-
-    let journal = ClaimJournal {
-        merkle_root: j.merkle_root,
-        nullifier: j.nullifier,
-        distributor_id: j.distributor_id,
-        allocation: j.allocation,
-        recipient_note_hash: j.recipient_note_hash,
-    };
-
-    let dist_id_bytes: [u8; 32] = *distribution_account.account_id.value();
-    apply_claim(&mut state, &journal, dist_id_bytes, &recipient_note)?;
-
-    let mut dist_account = distribution_account.account;
-    dist_account.data = Data::try_from(borsh::to_vec(&state).expect("state serialise failed"))
-        .expect("state too large for Data");
-
-    Ok(vec![AccountPostState::new(dist_account)])
 }

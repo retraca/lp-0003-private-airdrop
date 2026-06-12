@@ -99,24 +99,30 @@ if [ "$CHAIN_MODE" = "1" ]; then
     PROGRAM_ID=$(wallet deploy-program "$PROGRAM_BIN" | grep -oE '[0-9a-f]{64}' | head -1)
     echo "  Program ID: $PROGRAM_ID"
   elif [ -z "$PROGRAM_ID" ]; then
-    echo "  Skipping deploy (set PROGRAM_BIN=<path> or PROGRAM_ID=<hex> to run this step)"
-    echo "  Using testnet program ID (deployed, see docs/TESTNET_EVIDENCE.md)"
-    PROGRAM_ID="${PROGRAM_ID:-d7f401fde733a4ac2b54f4fa909de9e2c86d2f2fd9e256498efea527ade52e85}"
+    echo "  Using testnet program IDs (deployed, see docs/TESTNET_EVIDENCE.md)"
+    PROGRAM_ID="${PROGRAM_ID:-641e17aa9ac2c393a01d4cdf3d12621c1816466b685e0b6993a760c16f5d2e8f}"
   fi
+  CLAIM_CIRCUIT_PROGRAM_ID="${CLAIM_CIRCUIT_PROGRAM_ID:-2919d161b729ec935b5ef5cc40b319fda02ad6d81df81f0245f5308b86b7fcd8}"
   TX=$("$CLAIM_BIN" chain initialize \
     --sequencer "$SEQUENCER" \
     --program-id "$PROGRAM_ID" \
+    --claim-circuit-program-id "$CLAIM_CIRCUIT_PROGRAM_ID" \
     --signing-key "$SIGNING_KEY" \
     --merkle-root "$MERKLE_ROOT" \
-    --total-supply 1000000)
+    --total-supply 1000000 | grep '^tx:' | awk '{print $2}')
   echo "  Initialize tx: $TX"
   echo "  Waiting for inclusion..."
+  INITIALIZED=0
   for i in $(seq 1 24); do
-    "$CLAIM_BIN" chain state --sequencer "$SEQUENCER" --distributor-id "$DISTRIBUTOR_ID" 2>/dev/null \
-      | grep -q "program_owner: $PROGRAM_ID" && break
+    if "$CLAIM_BIN" chain state --sequencer "$SEQUENCER" --distributor-id "$DISTRIBUTOR_ID" 2>/dev/null \
+      | grep -q "program_owner: $PROGRAM_ID"; then INITIALIZED=1; break; fi
     sleep 5
   done
   "$CLAIM_BIN" chain state --sequencer "$SEQUENCER" --distributor-id "$DISTRIBUTOR_ID"
+  if [ "$INITIALIZED" != "1" ]; then
+    echo "ERROR: initialize did not land (is program $PROGRAM_ID deployed on this sequencer?)" >&2
+    exit 1
+  fi
 else
   echo "[3/5] On-chain init skipped (pass --chain to run on-chain steps)"
   echo "      merkle_root=$MERKLE_ROOT, total_supply=1000000"
@@ -144,16 +150,34 @@ echo "[5/5] Verifying receipt offline..."
 
 echo ""
 if [ "$CHAIN_MODE" = "1" ]; then
-  echo "  On-chain claim submission"
+  echo "  Claiming on-chain (privacy-preserving transaction)..."
+  echo "  The claim-circuit program is proven locally: account_id, allocation,"
+  echo "  Merkle path, and note preimage never leave this machine."
+  TX=$("$CLAIM_BIN" chain claim \
+    --sequencer "$SEQUENCER" \
+    --program-id "$PROGRAM_ID" \
+    --distributor-id "$DISTRIBUTOR_ID" \
+    --account-id "$ACCOUNT_ID" \
+    --allocation "$ALLOCATION" \
+    --leaf-index 0 \
+    --merkle-path "$LEAF" \
+    --recipient-note "$RECIPIENT_NOTE" | grep '^tx:' | awk '{print $2}')
+  echo "  Claim tx: $TX"
+  echo "  Waiting for the claim to land..."
+  CLAIMED=0
+  for i in $(seq 1 24); do
+    STATE=$("$CLAIM_BIN" chain state --sequencer "$SEQUENCER" --distributor-id "$DISTRIBUTOR_ID" 2>/dev/null || true)
+    # claimed=1000 (0x3e8 LE) followed by one spent nullifier
+    if echo "$STATE" | grep -q "e803000000000000000000000000000001000000"; then CLAIMED=1; break; fi
+    sleep 5
+  done
   echo ""
-  echo "  KNOWN LIMITATION: LEZ public transactions carry no RISC0 receipts, so"
-  echo "  the program cannot resolve the claim-proof assumption"
-  echo "  (sys_verify_integrity: no receipt found). Submitting claims requires"
-  echo "  the LEZ privacy-preserving transaction path, where the client proves"
-  echo "  the program execution locally with the claim receipt as an assumption."
-  echo "  See docs/TESTNET_EVIDENCE.md. The claim proof was generated and"
-  echo "  verified offline above; on-chain submission via the privacy path is"
-  echo "  in progress."
+  echo "  Final distribution state (claimed=1000, 1 spent nullifier):"
+  "$CLAIM_BIN" chain state --sequencer "$SEQUENCER" --distributor-id "$DISTRIBUTOR_ID"
+  if [ "$CLAIMED" != "1" ]; then
+    echo "ERROR: claim not applied on-chain" >&2
+    exit 1
+  fi
 fi
 
 echo ""
