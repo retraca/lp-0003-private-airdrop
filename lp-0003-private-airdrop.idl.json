@@ -5,22 +5,79 @@
     {
       "name": "initialize",
       "accounts": [
-        { "name": "distribution", "isMut": true, "isSigner": false, "pda": { "seeds": [{ "kind": "literal", "value": "distribution_state" }] } },
-        { "name": "authority", "isMut": false, "isSigner": true }
+        {
+          "name": "distribution",
+          "isMut": true,
+          "isSigner": false,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "literal",
+                "value": "distribution_state"
+              }
+            ]
+          }
+        },
+        {
+          "name": "authority",
+          "isMut": false,
+          "isSigner": true
+        }
       ],
       "args": [
-        { "name": "merkle_root", "type": { "array": ["u8", 32] } },
-        { "name": "total_supply", "type": "u128" }
+        {
+          "name": "merkle_root",
+          "type": {
+            "array": [
+              "u8",
+              32
+            ]
+          }
+        },
+        {
+          "name": "claim_circuit_program_id",
+          "type": {
+            "array": [
+              "u32",
+              8
+            ]
+          }
+        },
+        {
+          "name": "total_supply",
+          "type": "u128"
+        }
       ]
     },
     {
       "name": "claim",
       "accounts": [
-        { "name": "distribution", "isMut": true, "isSigner": false, "pda": { "seeds": [{ "kind": "literal", "value": "distribution_state" }] } }
+        {
+          "name": "distribution",
+          "isMut": true,
+          "isSigner": false,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "literal",
+                "value": "distribution_state"
+              }
+            ]
+          }
+        }
       ],
       "args": [
-        { "name": "receipt_bytes", "type": "bytes" },
-        { "name": "recipient_note", "type": "bytes" }
+        {
+          "name": "journal_bytes",
+          "type": "bytes"
+        },
+        {
+          "name": "recipient_note",
+          "type": "bytes"
+        }
+      ],
+      "docs": [
+        "Callable only as a chained call from the registered claim-circuit program (PPE pipeline)."
       ]
     }
   ],
@@ -30,20 +87,71 @@
       "type": {
         "kind": "struct",
         "fields": [
-          { "name": "merkle_root", "type": { "array": ["u8", 32] } },
-          { "name": "total_supply", "type": "u128" },
-          { "name": "claimed", "type": "u128" },
-          { "name": "spent_nullifiers", "type": { "vec": { "array": ["u8", 32] } } }
+          {
+            "name": "merkle_root",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "claim_circuit_program_id",
+            "type": {
+              "array": [
+                "u32",
+                8
+              ]
+            }
+          },
+          {
+            "name": "total_supply",
+            "type": "u128"
+          },
+          {
+            "name": "claimed",
+            "type": "u128"
+          },
+          {
+            "name": "spent_nullifiers",
+            "type": {
+              "vec": {
+                "array": [
+                  "u8",
+                  32
+                ]
+              }
+            }
+          }
         ]
       }
     }
   ],
   "errors": [
-    { "code": 7001, "name": "ProofInvalid" },
-    { "code": 7002, "name": "DistributorMismatch" },
-    { "code": 7003, "name": "RootMismatch" },
-    { "code": 7004, "name": "NullifierSpent" },
-    { "code": 7005, "name": "DistributionExhausted" },
-    { "code": 7006, "name": "RecipientMismatch" }
+    {
+      "code": 7001,
+      "name": "ProofInvalid"
+    },
+    {
+      "code": 7002,
+      "name": "DistributorMismatch"
+    },
+    {
+      "code": 7003,
+      "name": "RootMismatch"
+    },
+    {
+      "code": 7004,
+      "name": "NullifierSpent"
+    },
+    {
+      "code": 7005,
+      "name": "DistributionExhausted"
+    },
+    {
+      "code": 7006,
+      "name": "RecipientMismatch"
+    }
   ]
 }
