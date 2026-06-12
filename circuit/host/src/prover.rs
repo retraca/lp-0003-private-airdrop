@@ -31,8 +31,8 @@ pub fn prove(input: ProverInput) -> Result<Receipt> {
 /// Matches the guest's domain-tagged hash: SHA256(0x00 || account_id || allocation_le).
 pub fn leaf_hash(account_id: &[u8; 32], allocation: u128) -> [u8; 32] {
     let mut h = Sha256::new();
-    h.update(&[0x00u8]);
+    h.update([0x00u8]);
     h.update(account_id);
-    h.update(&allocation.to_le_bytes());
+    h.update(allocation.to_le_bytes());
     h.finalize().into()
 }

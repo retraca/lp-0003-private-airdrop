@@ -53,9 +53,9 @@ pub async fn submit_claim(
 pub fn leaf_hash(account_id: &[u8; 32], allocation: u128) -> [u8; 32] {
     use sha2::{Digest, Sha256};
     let mut h = Sha256::new();
-    h.update(&[0x00u8]);
+    h.update([0x00u8]);
     h.update(account_id);
-    h.update(&allocation.to_le_bytes());
+    h.update(allocation.to_le_bytes());
     h.finalize().into()
 }
 
@@ -64,7 +64,7 @@ pub fn leaf_hash(account_id: &[u8; 32], allocation: u128) -> [u8; 32] {
 pub fn node_hash(left: &[u8; 32], right: &[u8; 32]) -> [u8; 32] {
     use sha2::{Digest, Sha256};
     let mut h = Sha256::new();
-    h.update(&[0x01u8]);
+    h.update([0x01u8]);
     h.update(left);
     h.update(right);
     h.finalize().into()
