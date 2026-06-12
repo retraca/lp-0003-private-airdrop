@@ -54,9 +54,23 @@ cargo build --release --bin airdrop-claim $BIN_FEATURES 2>&1 | tail -3
 
 # Deterministic test inputs -- never use these outside demo/testing
 ACCOUNT_ID="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-DISTRIBUTOR_ID="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 ALLOCATION=1000
 RECIPIENT_NOTE="cafebabe01020304"
+
+# Distributor account: in chain mode the account is claimed by the program at
+# initialize, which requires the tx to be signed with the account's key.
+if [ "$CHAIN_MODE" = "1" ]; then
+  KEYGEN_OUT=$("$CLAIM_BIN" chain keygen 2>/dev/null || true)
+  if [ -z "$KEYGEN_OUT" ]; then
+    cargo build --release --bin airdrop-claim --features chain 2>&1 | tail -1
+    KEYGEN_OUT=$("$CLAIM_BIN" chain keygen)
+  fi
+  SIGNING_KEY=$(echo "$KEYGEN_OUT" | grep '^signing_key:' | awk '{print $2}')
+  DISTRIBUTOR_ID=$(echo "$KEYGEN_OUT" | grep '^distributor_id:' | awk '{print $2}')
+  echo "Distributor account: $DISTRIBUTOR_ID (fresh key, demo only)"
+else
+  DISTRIBUTOR_ID="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+fi
 
 # Minimal depth-1 Merkle tree: root = SHA256(0x01 || leaf || leaf)
 LEAF=$(python3 -c "
@@ -86,16 +100,23 @@ if [ "$CHAIN_MODE" = "1" ]; then
     echo "  Program ID: $PROGRAM_ID"
   elif [ -z "$PROGRAM_ID" ]; then
     echo "  Skipping deploy (set PROGRAM_BIN=<path> or PROGRAM_ID=<hex> to run this step)"
-    echo "  Using distributor_id as program account (testnet demo)"
-    PROGRAM_ID="${PROGRAM_ID:-0000000000000000000000000000000000000000000000000000000000000001}"
+    echo "  Using testnet program ID (deployed, see docs/TESTNET_EVIDENCE.md)"
+    PROGRAM_ID="${PROGRAM_ID:-d7f401fde733a4ac2b54f4fa909de9e2c86d2f2fd9e256498efea527ade52e85}"
   fi
   TX=$("$CLAIM_BIN" chain initialize \
     --sequencer "$SEQUENCER" \
     --program-id "$PROGRAM_ID" \
-    --distributor-id "$DISTRIBUTOR_ID" \
+    --signing-key "$SIGNING_KEY" \
     --merkle-root "$MERKLE_ROOT" \
     --total-supply 1000000)
   echo "  Initialize tx: $TX"
+  echo "  Waiting for inclusion..."
+  for i in $(seq 1 24); do
+    "$CLAIM_BIN" chain state --sequencer "$SEQUENCER" --distributor-id "$DISTRIBUTOR_ID" 2>/dev/null \
+      | grep -q "program_owner: $PROGRAM_ID" && break
+    sleep 5
+  done
+  "$CLAIM_BIN" chain state --sequencer "$SEQUENCER" --distributor-id "$DISTRIBUTOR_ID"
 else
   echo "[3/5] On-chain init skipped (pass --chain to run on-chain steps)"
   echo "      merkle_root=$MERKLE_ROOT, total_supply=1000000"
@@ -123,14 +144,16 @@ echo "[5/5] Verifying receipt offline..."
 
 echo ""
 if [ "$CHAIN_MODE" = "1" ]; then
-  echo "  Submitting claim on-chain..."
-  TX=$("$CLAIM_BIN" chain claim \
-    --sequencer "$SEQUENCER" \
-    --program-id "$PROGRAM_ID" \
-    --distributor-id "$DISTRIBUTOR_ID" \
-    --receipt /tmp/claim-receipt.bin \
-    --recipient-note "$RECIPIENT_NOTE")
-  echo "  Claim tx: $TX"
+  echo "  On-chain claim submission"
+  echo ""
+  echo "  KNOWN LIMITATION: LEZ public transactions carry no RISC0 receipts, so"
+  echo "  the program cannot resolve the claim-proof assumption"
+  echo "  (sys_verify_integrity: no receipt found). Submitting claims requires"
+  echo "  the LEZ privacy-preserving transaction path, where the client proves"
+  echo "  the program execution locally with the claim receipt as an assumption."
+  echo "  See docs/TESTNET_EVIDENCE.md. The claim proof was generated and"
+  echo "  verified offline above; on-chain submission via the privacy path is"
+  echo "  in progress."
 fi
 
 echo ""

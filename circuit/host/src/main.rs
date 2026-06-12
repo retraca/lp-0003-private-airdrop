@@ -59,16 +59,30 @@ enum Cmd {
 
 #[derive(Subcommand)]
 enum ChainCmd {
+    /// Generate a fresh account signing key and print the derived account ID.
+    /// Use the account ID as the distributor ID and pass the key to `initialize`.
+    Keygen,
+    /// Read the distributor account state from the chain.
+    State {
+        #[arg(long, default_value = "http://127.0.0.1:3040")]
+        sequencer: String,
+        #[arg(long)]
+        distributor_id: String,
+    },
     /// Initialize the airdrop distributor on-chain.
+    ///
+    /// Account claiming requires authorization: the transaction must be signed
+    /// with the distributor account's key (generate one with `chain keygen`).
+    /// The distributor account ID is derived from the signing key.
     Initialize {
         #[arg(long, default_value = "http://127.0.0.1:3040")]
         sequencer: String,
         /// Program ID (64-char hex, from wallet deploy-program output).
         #[arg(long)]
         program_id: String,
-        /// Distributor account ID (64-char hex, deterministic -- choose any 32-byte value).
+        /// Account signing key (64-char hex, from `chain keygen`).
         #[arg(long)]
-        distributor_id: String,
+        signing_key: String,
         /// Merkle root of the eligibility tree (64-char hex).
         #[arg(long)]
         merkle_root: String,
@@ -169,12 +183,24 @@ mod chain {
     use anyhow::Result;
     use common::transaction::NSSATransaction;
     use nssa::{
-        AccountId,
+        AccountId, PrivateKey, PublicKey,
         public_transaction::{Message, WitnessSet},
         PublicTransaction,
     };
     use sequencer_service_rpc::{RpcClient as _, SequencerClientBuilder};
 
+    pub fn account_id_for_key(key: &PrivateKey) -> AccountId {
+        AccountId::from(&PublicKey::new_from_private_key(key))
+    }
+
+    pub fn keygen() -> (PrivateKey, AccountId) {
+        let key = PrivateKey::new_os_random();
+        let account_id = account_id_for_key(&key);
+        (key, account_id)
+    }
+
+    /// Unsigned call: for instructions on an account already owned by the
+    /// program (`#[account(mut)]`), no signature is needed.
     pub async fn send_call(
         sequencer: &str,
         program_id: [u32; 8],
@@ -187,8 +213,6 @@ mod chain {
 
         let account_id: AccountId = AccountId::new(distributor_id);
 
-        // Unsigned transaction: the airdrop instructions require no wallet signer
-        // (no #[account(signer)] on any parameter in the on-chain program).
         let message = Message::new_preserialized(
             program_id,
             vec![account_id],
@@ -204,6 +228,56 @@ mod chain {
             .context("send_transaction failed")?;
 
         Ok(hex::encode(hash))
+    }
+
+    /// Signed call: account claiming (`#[account(init)]`) requires the
+    /// transaction to be authorized by the account's key.
+    pub async fn send_signed_call(
+        sequencer: &str,
+        program_id: [u32; 8],
+        key: &PrivateKey,
+        instruction_data: Vec<u32>,
+    ) -> Result<(String, AccountId)> {
+        let client = SequencerClientBuilder::default()
+            .build(sequencer)
+            .context("build sequencer client")?;
+
+        let account_id = account_id_for_key(key);
+        let nonces = client
+            .get_accounts_nonces(vec![account_id])
+            .await
+            .context("get_accounts_nonces failed")?;
+
+        let message = Message::new_preserialized(
+            program_id,
+            vec![account_id],
+            nonces,
+            instruction_data,
+        );
+        let witness_set = WitnessSet::for_message(&message, &[key]);
+        let tx = PublicTransaction::new(message, witness_set);
+
+        let hash = client
+            .send_transaction(NSSATransaction::Public(tx))
+            .await
+            .context("send_transaction failed")?;
+
+        Ok((hex::encode(hash), account_id))
+    }
+
+    /// Read raw account state.
+    pub async fn get_account_state(
+        sequencer: &str,
+        account_id_bytes: [u8; 32],
+    ) -> Result<(Vec<u8>, [u32; 8])> {
+        let client = SequencerClientBuilder::default()
+            .build(sequencer)
+            .context("build sequencer client")?;
+        let account = client
+            .get_account(AccountId::new(account_id_bytes))
+            .await
+            .context("get_account failed")?;
+        Ok((account.data.as_ref().to_vec(), account.program_owner))
     }
 }
 
@@ -311,13 +385,33 @@ async fn main() -> Result<()> {
 
             #[cfg(feature = "chain")]
             match chain_cmd {
-                ChainCmd::Initialize { sequencer, program_id, distributor_id, merkle_root, total_supply } => {
-                    let pid = parse_program_id(&program_id)?;
+                ChainCmd::Keygen => {
+                    let (key, account_id) = chain::keygen();
+                    println!("signing_key: {key}");
+                    println!("distributor_id: {}", hex::encode(account_id.value()));
+                    println!("account_id (base58): {account_id}");
+                }
+                ChainCmd::State { sequencer, distributor_id } => {
                     let did = parse_hex32(&distributor_id)?;
+                    let (data, program_owner) = chain::get_account_state(&sequencer, did).await?;
+                    let owner_hex = program_owner
+                        .iter()
+                        .flat_map(|w| w.to_le_bytes())
+                        .map(|b| format!("{b:02x}"))
+                        .collect::<String>();
+                    println!("program_owner: {owner_hex}");
+                    println!("data ({} bytes): {}", data.len(), hex::encode(&data));
+                }
+                ChainCmd::Initialize { sequencer, program_id, signing_key, merkle_root, total_supply } => {
+                    let pid = parse_program_id(&program_id)?;
+                    let key: nssa::PrivateKey = signing_key.parse()
+                        .map_err(|e| anyhow::anyhow!("invalid signing key: {e:?}"))?;
                     let root = parse_hex32(&merkle_root)?;
                     let instr = instr_initialize(&root, total_supply);
-                    let hash = chain::send_call(&sequencer, pid, did, instr).await?;
+                    let (hash, account_id) =
+                        chain::send_signed_call(&sequencer, pid, &key, instr).await?;
                     println!("tx: {hash}");
+                    println!("distributor_id: {}", hex::encode(account_id.value()));
                 }
                 ChainCmd::Claim { sequencer, program_id, distributor_id, receipt, recipient_note } => {
                     let pid = parse_program_id(&program_id)?;
