@@ -92,3 +92,8 @@ airdrop-claim verify \
 ## License
 
 MIT or Apache-2.0
+
+## Privacy model & benchmarks
+
+- [docs/PRIVACY_MODEL.md](docs/PRIVACY_MODEL.md) — full threat model: what on-chain observers, the distributor, and other claimants learn at each phase; residual leakage; security assumptions.
+- [docs/BENCHMARKS.md](docs/BENCHMARKS.md) — reproducible CU-cost and proof-time methodology with measured numbers from the testnet evidence run.
