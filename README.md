@@ -97,3 +97,7 @@ MIT or Apache-2.0
 
 - [docs/PRIVACY_MODEL.md](docs/PRIVACY_MODEL.md) — full threat model: what on-chain observers, the distributor, and other claimants learn at each phase; residual leakage; security assumptions.
 - [docs/BENCHMARKS.md](docs/BENCHMARKS.md) — reproducible CU-cost and proof-time methodology with measured numbers from the testnet evidence run.
+
+## FURPS self-assessment
+
+See [docs/FURPS.md](docs/FURPS.md) for the Functionality / Usability / Reliability / Performance / Supportability self-assessment.
